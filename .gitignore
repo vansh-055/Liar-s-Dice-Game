@@ -1,6 +1,9 @@
 node_modules/
 npm-debug.log*
 
+# local-only CLI test harness for rules.js - not part of the deployed app
+cli.js
+
 .env
 .env.local
 
