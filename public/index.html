@@ -10,15 +10,25 @@
     <div class="app">
         <h1>🎲 Liar's Dice</h1>
         <p class="subtitle">Bluff, bid, and call it out.</p>
+        <p style="text-align:center; margin-top:-0.75rem; margin-bottom:1.5rem;">
+            <button id="rulesBtn" class="secondary" type="button">📖 How to Play</button>
+        </p>
 
         <p id="warning"></p>
 
         <div id="lobby" class="panel">
-            <div class="field">
-                <label for="nameInput">Your name</label>
-                <input id="nameInput" type="text" placeholder="Enter your name">
+            <div class="field-row">
+                <div class="field">
+                    <label for="nameInput">Your name</label>
+                    <input id="nameInput" type="text" placeholder="Enter your name">
+                </div>
+                <div class="field">
+                    <label for="roomCodeInput">Room code (blank = create new)</label>
+                    <input id="roomCodeInput" type="text" placeholder="Leave blank, or paste a code" maxlength="4" style="text-transform:uppercase;">
+                </div>
             </div>
             <button id="joinBtn">Join</button>
+            <p id="roomCodeDisplay" style="display:none;"></p>
             <p id="lobbyStatus"></p>
 
             <div id="gameSettings" class="field-row">
@@ -60,6 +70,114 @@
             </div>
 
             <div id="log"></div>
+        </div>
+    </div>
+
+    <div id="rulesModal" class="modal-overlay" style="display:none;">
+        <div class="modal-panel">
+            <div class="modal-header">
+                <h2>How to Play</h2>
+                <button id="rulesCloseBtn" class="secondary" type="button">✕</button>
+            </div>
+
+            <div class="rules-step">
+                <div class="rules-step-num">1</div>
+                <div class="rules-step-body">
+                    <h3>Everyone rolls a hidden hand</h3>
+                    <p>Each player gets the same number of dice, rolled in secret. You only ever see your own — everyone else's are hidden until someone calls a bluff.</p>
+                    <div class="illustration">
+                        <div class="illustration-row">
+                            <div class="mini-player">
+                                <span class="mini-player-label">You</span>
+                                <div class="die small">4</div>
+                                <div class="die small">2</div>
+                                <div class="die small">6</div>
+                            </div>
+                            <div class="mini-player">
+                                <span class="mini-player-label">Opponent</span>
+                                <div class="die small hidden-die">?</div>
+                                <div class="die small hidden-die">?</div>
+                                <div class="die small hidden-die">?</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rules-step">
+                <div class="rules-step-num">2</div>
+                <div class="rules-step-body">
+                    <h3>Make a bid</h3>
+                    <p>On your turn, claim how many dice of a certain face exist across <em>everyone's</em> hands combined — not just your own. "At least" is the key word: the real count just has to meet or beat it.</p>
+                    <div class="illustration">
+                        <div class="bid-chip">
+                            <span class="bid-qty">3</span>
+                            <span class="bid-times">×</span>
+                            <div class="die small">4</div>
+                            <span class="bid-caption">"at least three 4s on the table"</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rules-step">
+                <div class="rules-step-num">3</div>
+                <div class="rules-step-body">
+                    <h3>Raise the bid</h3>
+                    <p>Each turn you must either raise or call. A raise means a <strong>higher quantity</strong> (any face), or the <strong>same quantity with a higher face</strong>. You can't lower a bid or repeat it exactly.</p>
+                    <div class="illustration illustration-col">
+                        <div class="raise-line">
+                            <div class="bid-chip small-chip"><span class="bid-qty">3</span><span class="bid-times">×</span><div class="die small">4</div></div>
+                            <span class="raise-arrow">→</span>
+                            <div class="bid-chip small-chip valid"><span class="bid-qty">4</span><span class="bid-times">×</span><div class="die small">4</div></div>
+                            <span class="raise-tag">higher quantity</span>
+                        </div>
+                        <div class="raise-line">
+                            <div class="bid-chip small-chip"><span class="bid-qty">3</span><span class="bid-times">×</span><div class="die small">4</div></div>
+                            <span class="raise-arrow">→</span>
+                            <div class="bid-chip small-chip valid"><span class="bid-qty">3</span><span class="bid-times">×</span><div class="die small">6</div></div>
+                            <span class="raise-tag">same qty, higher face</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rules-step">
+                <div class="rules-step-num">4</div>
+                <div class="rules-step-body">
+                    <h3>...or call "Liar!"</h3>
+                    <p>Instead of raising, you can call the last bid a bluff. Every hand is revealed and the actual count is checked against the bid.</p>
+                    <div class="illustration illustration-col">
+                        <div class="reveal-example">
+                            <div class="dice-row" style="margin-bottom:0.3rem;">
+                                <div class="die small">4</div><div class="die small">1</div><div class="die small">4</div>
+                                <div class="die small">4</div><div class="die small">2</div>
+                            </div>
+                            <span class="reveal-verdict ok">✓ Bid of "3 × face 4" holds — bidder wins, caller loses a die</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rules-step">
+                <div class="rules-step-num">5</div>
+                <div class="rules-step-body">
+                    <h3>Lose a die, keep playing</h3>
+                    <p>Whoever was wrong — the bidder if the count fell short, the caller if it held up — loses one die. Once you hit zero, you're out. Last player standing wins.</p>
+                    <div class="illustration">
+                        <div class="mini-player">
+                            <div class="die small">5</div>
+                            <div class="die small">3</div>
+                            <div class="die small removed-die">✕</div>
+                        </div>
+                        <span class="raise-arrow">→</span>
+                        <span style="font-size:1.4rem;">🏆</span>
+                        <span class="bid-caption">last dice standing wins</span>
+                    </div>
+                </div>
+            </div>
+
+            <button id="rulesCloseBtn2" type="button">Got it</button>
         </div>
     </div>
 

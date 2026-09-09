@@ -87,11 +87,12 @@ function render() {
 
 function handleJoin() {
     let name = document.getElementById("nameInput").value.trim();
+    let roomCode = document.getElementById("roomCodeInput").value.trim().toUpperCase();
     if (!name) {
         showWarning("Enter a name first.");
         return;
     }
-    socket.emit('join', name);
+    socket.emit('join', { name, roomCode });
 }
 
 function startGame() {
@@ -129,6 +130,15 @@ socket.on('lobbyUpdate', (names) => {
 
 socket.on('joinRejected', (msg) => {
     showWarning(msg);
+});
+
+socket.on('joinedRoom', (roomCode) => {
+    let display = document.getElementById("roomCodeDisplay");
+    display.style.display = "block";
+    display.innerHTML = `Room code: <b>${roomCode}</b> - share this with friends so they can join.`;
+    document.getElementById("joinBtn").disabled = true;
+    document.getElementById("nameInput").disabled = true;
+    document.getElementById("roomCodeInput").disabled = true;
 });
 
 socket.on('stateUpdate', (newState) => {
@@ -221,6 +231,23 @@ socket.on('gameAborted', (msg) => {
 });
 
 // ---------- wire up buttons (once, at load) ----------
+
+function openRules() {
+    document.getElementById("rulesModal").style.display = "flex";
+}
+function closeRules() {
+    document.getElementById("rulesModal").style.display = "none";
+}
+
+document.getElementById("rulesBtn").addEventListener("click", openRules);
+document.getElementById("rulesCloseBtn").addEventListener("click", closeRules);
+document.getElementById("rulesCloseBtn2").addEventListener("click", closeRules);
+document.getElementById("rulesModal").addEventListener("click", (e) => {
+    if (e.target.id === "rulesModal") closeRules(); // click on the dark backdrop, not the panel itself
+});
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeRules();
+});
 
 document.getElementById("joinBtn").addEventListener("click", handleJoin);
 document.getElementById("startBtn").addEventListener("click", startGame);

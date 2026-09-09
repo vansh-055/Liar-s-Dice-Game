@@ -12,18 +12,39 @@ const io = new Server(server);
 
 app.use(express.static('public'));
 
-let players = [];      // [{ socketId, name }] - index in this array IS the player index
-let gameState = null;  // null until a game is actually running
+// Everything used to be one global game shared by every visitor. Now the server
+// hosts many independent games at once, each identified by a short room code.
+let rooms = new Map();       // roomCode -> { players: [{socketId,name}], gameState: null|{...} }
+let socketRoom = new Map();  // socket.id -> roomCode, so any handler can find "my room" in O(1)
 
-function broadcastLobby() {
-    io.emit('lobbyUpdate', players.map(p => p.name));
+const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I - easy to read aloud
+
+function generateRoomCode() {
+    let code;
+    do {
+        code = '';
+        for (let i = 0; i < 4; i++) {
+            code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
+        }
+    } while (rooms.has(code));
+    return code;
 }
 
-// Sends each player their OWN view of the game.
+function broadcastLobby(roomCode) {
+    let room = rooms.get(roomCode);
+    if (!room) return;
+    io.to(roomCode).emit('lobbyUpdate', room.players.map(p => p.name));
+}
+
+// Sends each player in a room their OWN view of that room's game.
 // Note what is absent: the full `hands` array. Each browser only ever receives
 // its own dice, so opponents' hands are genuinely hidden, not just hidden in the UI.
-function sendStateToAll() {
-    players.forEach((player, playerIndex) => {
+function sendStateToAll(roomCode) {
+    let room = rooms.get(roomCode);
+    if (!room || !room.gameState) return;
+    let gameState = room.gameState;
+
+    room.players.forEach((player, playerIndex) => {
         io.to(player.socketId).emit('stateUpdate', {
             playerNames: gameState.playerNames,
             playerDiceCounts: gameState.playerDiceCounts,
@@ -38,33 +59,68 @@ function sendStateToAll() {
     });
 }
 
+// A room with nobody left in it should not sit in memory forever.
+function cleanupRoomIfEmpty(roomCode) {
+    let room = rooms.get(roomCode);
+    if (room && room.players.length === 0) {
+        rooms.delete(roomCode);
+    }
+}
+
 io.on('connection', (socket) => {
     console.log('A player connected:', socket.id);
 
-    // send the newcomer the current lobby so they aren't looking at a blank list
-    socket.emit('lobbyUpdate', players.map(p => p.name));
+    socket.on('join', (data) => {
+        let name = ((data && data.name) || '').toString().trim();
+        let requestedCode = ((data && data.roomCode) || '').toString().trim().toUpperCase();
 
-    socket.on('join', (name) => {
-        if (gameState) {
-            socket.emit('joinRejected', 'A game is already in progress.');
+        if (!name) {
+            socket.emit('joinRejected', 'Enter a name first.');
             return;
         }
-        if (players.some(p => p.socketId === socket.id)) {
+
+        let roomCode;
+        if (requestedCode) {
+            if (!rooms.has(requestedCode)) {
+                socket.emit('joinRejected', `Room "${requestedCode}" doesn't exist.`);
+                return;
+            }
+            roomCode = requestedCode;
+        } else {
+            roomCode = generateRoomCode();
+            rooms.set(roomCode, { players: [], gameState: null });
+        }
+
+        let room = rooms.get(roomCode);
+
+        if (room.gameState) {
+            socket.emit('joinRejected', 'A game is already in progress in that room.');
+            return;
+        }
+        if (room.players.some(p => p.socketId === socket.id)) {
             socket.emit('joinRejected', 'You have already joined.');
             return;
         }
 
-        players.push({ socketId: socket.id, name: name });
-        console.log('Player joined:', name, socket.id);
-        broadcastLobby();
+        room.players.push({ socketId: socket.id, name: name });
+        socketRoom.set(socket.id, roomCode);
+        socket.join(roomCode); // Socket.IO's own grouping - lets us io.to(roomCode).emit(...) below
+
+        console.log('Player joined:', name, socket.id, 'room:', roomCode);
+        socket.emit('joinedRoom', roomCode);
+        broadcastLobby(roomCode);
     });
 
     socket.on('startGame', (data) => {
-        if (gameState) {
+        let roomCode = socketRoom.get(socket.id);
+        let room = rooms.get(roomCode);
+        if (!room) return;
+
+        if (room.gameState) {
             socket.emit('joinRejected', 'A game is already in progress.');
             return;
         }
-        if (players.length < 2) {
+        if (room.players.length < 2) {
             socket.emit('joinRejected', 'Need at least 2 players.');
             return;
         }
@@ -77,15 +133,15 @@ io.on('connection', (socket) => {
         if (startingDice > 10) { startingDice = 10; }
         if (numFaces > 20) { numFaces = 20; }
 
-        let numPlayers = players.length;
+        let numPlayers = room.players.length;
 
         let playerDiceCounts = [];
         for (let i = 0; i < numPlayers; i++) {
             playerDiceCounts.push(startingDice);
         }
 
-        gameState = {
-            playerNames: players.map(p => p.name),
+        room.gameState = {
+            playerNames: room.players.map(p => p.name),
             playerDiceCounts: playerDiceCounts,
             numFaces: numFaces,
             currentPlayer: Math.floor(Math.random() * numPlayers),
@@ -95,20 +151,23 @@ io.on('connection', (socket) => {
             awaitingRoll: false
         };
 
-        console.log('Game started with players:', gameState.playerNames);
-        sendStateToAll();
+        console.log('Game started in room', roomCode, 'with players:', room.gameState.playerNames);
+        sendStateToAll(roomCode);
     });
 
     socket.on('raise', (data) => {
-        if (!gameState) {
+        let roomCode = socketRoom.get(socket.id);
+        let room = rooms.get(roomCode);
+        if (!room || !room.gameState) {
             socket.emit('invalidRaise');
             return;
         }
+        let gameState = room.gameState;
 
         // Never trust the client: the browser disables the button when it isn't
         // your turn, but anyone can re-enable it in dev tools and emit anyway.
         // The server is the only place a rule is actually enforced.
-        let senderIndex = players.findIndex(p => p.socketId === socket.id);
+        let senderIndex = room.players.findIndex(p => p.socketId === socket.id);
         if (senderIndex !== gameState.currentPlayer) {
             socket.emit('notYourTurn');
             return;
@@ -134,18 +193,19 @@ io.on('connection', (socket) => {
             gameState.currentBidQuantity = bidQuantity;
             gameState.currentBidFace = bidFace;
             gameState.currentPlayer = getNextActivePlayer(gameState.currentPlayer, gameState.playerDiceCounts);
-            sendStateToAll();
+            sendStateToAll(roomCode);
         } else {
             socket.emit('invalidRaise');
         }
     });
 
     socket.on('call', () => {
-        if (!gameState) {
-            return;
-        }
+        let roomCode = socketRoom.get(socket.id);
+        let room = rooms.get(roomCode);
+        if (!room || !room.gameState) return;
+        let gameState = room.gameState;
 
-        let senderIndex = players.findIndex(p => p.socketId === socket.id);
+        let senderIndex = room.players.findIndex(p => p.socketId === socket.id);
         if (senderIndex !== gameState.currentPlayer) {
             socket.emit('notYourTurn');
             return;
@@ -175,7 +235,7 @@ io.on('connection', (socket) => {
 
         let winnerIndex = checkWinner(gameState.playerDiceCounts);
         if (winnerIndex !== null) {
-            io.emit('gameOver', {
+            io.to(roomCode).emit('gameOver', {
                 winnerIndex,
                 hands: revealedHands,
                 bidQuantity: bidQuantityCalled,
@@ -183,8 +243,8 @@ io.on('connection', (socket) => {
                 loserIndex,
                 winnerRoundIndex
             });
-            gameState = null;
-            broadcastLobby();
+            room.gameState = null;
+            broadcastLobby(roomCode);
             return;
         }
 
@@ -196,41 +256,52 @@ io.on('connection', (socket) => {
         // and the next round only starts when someone clicks Roll.
         gameState.awaitingRoll = true;
 
-        io.emit('roundResult', {
+        io.to(roomCode).emit('roundResult', {
             hands: revealedHands,
             bidQuantity: bidQuantityCalled,
             bidFace: bidFaceCalled,
             loserIndex,
             winnerRoundIndex
         });
-        sendStateToAll();
+        sendStateToAll(roomCode);
     });
 
     socket.on('rollNextRound', () => {
-        if (!gameState || !gameState.awaitingRoll) {
+        let roomCode = socketRoom.get(socket.id);
+        let room = rooms.get(roomCode);
+        if (!room || !room.gameState || !room.gameState.awaitingRoll) {
             return;
         }
+        let gameState = room.gameState;
 
         gameState.hands = rollAllHands(gameState.playerDiceCounts, gameState.numFaces);
         gameState.currentBidQuantity = 0;
         gameState.currentBidFace = 0;
         gameState.awaitingRoll = false;
 
-        sendStateToAll();
+        sendStateToAll(roomCode);
     });
 
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
 
-        let wasInGame = players.some(p => p.socketId === socket.id);
-        players = players.filter(p => p.socketId !== socket.id);
+        let roomCode = socketRoom.get(socket.id);
+        socketRoom.delete(socket.id);
+        if (!roomCode) return;
 
-        if (gameState && wasInGame) {
-            gameState = null;
-            io.emit('gameAborted', 'A player disconnected. Game ended.');
+        let room = rooms.get(roomCode);
+        if (!room) return;
+
+        let wasInGame = room.players.some(p => p.socketId === socket.id);
+        room.players = room.players.filter(p => p.socketId !== socket.id);
+
+        if (room.gameState && wasInGame) {
+            room.gameState = null;
+            io.to(roomCode).emit('gameAborted', 'A player disconnected. Game ended.');
         }
 
-        broadcastLobby();
+        broadcastLobby(roomCode);
+        cleanupRoomIfEmpty(roomCode);
     });
 });
 
