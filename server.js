@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const {
     rollAllHands, resolveCall, isValidRaise,
     removeDie, checkWinner, getNextActivePlayer, getPrevActivePlayer
@@ -12,9 +13,18 @@ const io = new Server(server);
 
 app.use(express.static('public'));
 
+// How long a dropped connection gets to come back before we treat it as a real
+// departure. Covers a refresh, a flaky wifi blip, a phone locking - not someone
+// who's actually gone.
+const DISCONNECT_GRACE_MS = parseInt(process.env.DISCONNECT_GRACE_MS) || 30000;
+
 // Everything used to be one global game shared by every visitor. Now the server
 // hosts many independent games at once, each identified by a short room code.
-let rooms = new Map();       // roomCode -> { players: [{socketId,name}], gameState: null|{...} }
+// player shape: { socketId, name, token, connected, disconnectTimer }
+// `token` is a private per-player secret (never shown to other players) that
+// survives a reconnect even though `socketId` does not - it's how the server
+// recognizes "this new connection is actually seat 2 coming back", not a stranger.
+let rooms = new Map();       // roomCode -> { players: [...], gameState: null|{...} }
 let socketRoom = new Map();  // socket.id -> roomCode, so any handler can find "my room" in O(1)
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I - easy to read aloud
@@ -30,10 +40,14 @@ function generateRoomCode() {
     return code;
 }
 
+function generateToken() {
+    return crypto.randomBytes(16).toString('hex');
+}
+
 function broadcastLobby(roomCode) {
     let room = rooms.get(roomCode);
     if (!room) return;
-    io.to(roomCode).emit('lobbyUpdate', room.players.map(p => p.name));
+    io.to(roomCode).emit('lobbyUpdate', room.players.map(p => ({ name: p.name, connected: p.connected })));
 }
 
 // Sends each player in a room their OWN view of that room's game.
@@ -45,9 +59,11 @@ function sendStateToAll(roomCode) {
     let gameState = room.gameState;
 
     room.players.forEach((player, playerIndex) => {
+        if (!player.connected) return; // nobody there to receive it right now
         io.to(player.socketId).emit('stateUpdate', {
             playerNames: gameState.playerNames,
             playerDiceCounts: gameState.playerDiceCounts,
+            playerConnected: room.players.map(p => p.connected),
             numFaces: gameState.numFaces,
             currentPlayer: gameState.currentPlayer,
             currentBidQuantity: gameState.currentBidQuantity,
@@ -67,13 +83,62 @@ function cleanupRoomIfEmpty(roomCode) {
     }
 }
 
+// Called once a disconnected player's grace period actually runs out without
+// them coming back. Only now do we treat it as a real departure.
+function finalizeDisconnect(roomCode, token) {
+    let room = rooms.get(roomCode);
+    if (!room) return;
+
+    let player = room.players.find(p => p.token === token);
+    if (!player || player.connected) return; // they reconnected before the timer fired
+
+    let wasInGame = !!room.gameState;
+
+    if (wasInGame) {
+        // Player indices are baked into gameState (hands, dice counts, turn order)
+        // the moment a game starts, so we can't quietly remove a seat mid-game
+        // without renumbering everything. Simplest correct move: end the round.
+        room.gameState = null;
+        io.to(roomCode).emit('gameAborted', `${player.name} didn't reconnect in time. Game ended.`);
+    }
+
+    room.players = room.players.filter(p => p.token !== token);
+    broadcastLobby(roomCode);
+    cleanupRoomIfEmpty(roomCode);
+}
+
 io.on('connection', (socket) => {
     console.log('A player connected:', socket.id);
 
     socket.on('join', (data) => {
         let name = ((data && data.name) || '').toString().trim();
         let requestedCode = ((data && data.roomCode) || '').toString().trim().toUpperCase();
+        let token = ((data && data.token) || '').toString().trim();
 
+        // ---- Reconnect path: a returning player presenting their old token ----
+        if (token && requestedCode && rooms.has(requestedCode)) {
+            let room = rooms.get(requestedCode);
+            let existing = room.players.find(p => p.token === token);
+            if (existing) {
+                clearTimeout(existing.disconnectTimer);
+                existing.socketId = socket.id;
+                existing.connected = true;
+
+                socketRoom.set(socket.id, requestedCode);
+                socket.join(requestedCode);
+
+                console.log('Player reconnected:', existing.name, socket.id, 'room:', requestedCode);
+                socket.emit('joinedRoom', { roomCode: requestedCode, token: existing.token });
+                io.to(requestedCode).emit('playerReconnected', existing.name);
+                broadcastLobby(requestedCode);
+                sendStateToAll(requestedCode);
+                return;
+            }
+            // Token didn't match anyone (grace period already expired, or a stale
+            // session from a previous visit) - fall through and join fresh below.
+        }
+
+        // ---- Fresh join path ----
         if (!name) {
             socket.emit('joinRejected', 'Enter a name first.');
             return;
@@ -102,12 +167,13 @@ io.on('connection', (socket) => {
             return;
         }
 
-        room.players.push({ socketId: socket.id, name: name });
+        let newToken = generateToken();
+        room.players.push({ socketId: socket.id, name: name, token: newToken, connected: true, disconnectTimer: null });
         socketRoom.set(socket.id, roomCode);
         socket.join(roomCode); // Socket.IO's own grouping - lets us io.to(roomCode).emit(...) below
 
         console.log('Player joined:', name, socket.id, 'room:', roomCode);
-        socket.emit('joinedRoom', roomCode);
+        socket.emit('joinedRoom', { roomCode, token: newToken });
         broadcastLobby(roomCode);
     });
 
@@ -292,16 +358,19 @@ io.on('connection', (socket) => {
         let room = rooms.get(roomCode);
         if (!room) return;
 
-        let wasInGame = room.players.some(p => p.socketId === socket.id);
-        room.players = room.players.filter(p => p.socketId !== socket.id);
+        let player = room.players.find(p => p.socketId === socket.id);
+        if (!player) return; // e.g. this socket already got replaced by a faster reconnect
 
-        if (room.gameState && wasInGame) {
-            room.gameState = null;
-            io.to(roomCode).emit('gameAborted', 'A player disconnected. Game ended.');
-        }
-
+        // Don't rip the seat out immediately - give them DISCONNECT_GRACE_MS to
+        // come back. Keeping them in `room.players` (just marked disconnected)
+        // preserves their index, which mid-game state depends on.
+        player.connected = false;
+        io.to(roomCode).emit('playerDisconnected', player.name);
         broadcastLobby(roomCode);
-        cleanupRoomIfEmpty(roomCode);
+
+        player.disconnectTimer = setTimeout(() => {
+            finalizeDisconnect(roomCode, player.token);
+        }, DISCONNECT_GRACE_MS);
     });
 });
 

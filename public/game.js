@@ -2,6 +2,27 @@ const socket = io();
 
 let state = null;
 let lastHandKey = null; // used to detect an actual new roll vs. a re-render
+let myName = null;      // the name we joined with - needed again if we save a session
+
+// ---------- reconnect session ----------
+// Survives a refresh/network blip: on reconnect we hand the server this token
+// so it can recognize "this is seat 2 coming back", not a new stranger. Wrapped
+// in try/catch since localStorage can throw in private-browsing contexts.
+
+function saveSession(roomCode, token, name) {
+    try {
+        localStorage.setItem("liarsDiceSession", JSON.stringify({ roomCode, token, name }));
+    } catch (e) { /* no persistence available - reconnect just won't be seamless */ }
+}
+function loadSession() {
+    try {
+        let raw = localStorage.getItem("liarsDiceSession");
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+}
+function clearSession() {
+    try { localStorage.removeItem("liarsDiceSession"); } catch (e) { /* ignore */ }
+}
 
 // ---------- die rendering ----------
 
@@ -35,6 +56,17 @@ function showWarning(msg) {
     document.getElementById("warning").textContent = msg;
 }
 
+// Small plain-text log entries (connect/disconnect notices), as opposed to the
+// dice-illustrated reveal cards built by buildRevealBlock() further down.
+function logText(msg) {
+    let p = document.createElement("p");
+    p.style.color = "var(--text-dim)";
+    p.style.fontSize = "0.85rem";
+    p.style.margin = "0";
+    p.textContent = msg;
+    logMessage(p);
+}
+
 function render() {
     document.getElementById("warning").textContent = "";
 
@@ -51,7 +83,10 @@ function render() {
 
     document.getElementById("diceCounts").textContent =
         "Dice remaining - " + state.playerNames
-            .map((name, i) => `${name}: ${state.playerDiceCounts[i]}`)
+            .map((name, i) => {
+                let away = state.playerConnected && !state.playerConnected[i];
+                return `${name}: ${state.playerDiceCounts[i]}${away ? " (disconnected)" : ""}`;
+            })
             .join(", ");
 
     if (state.currentBidQuantity === 0) {
@@ -92,6 +127,7 @@ function handleJoin() {
         showWarning("Enter a name first.");
         return;
     }
+    myName = name;
     socket.emit('join', { name, roomCode });
 }
 
@@ -119,26 +155,47 @@ function handleRoll() {
 
 socket.on('connect', () => {
     console.log('Connected to server with id:', socket.id);
+
+    // A fresh page load (refresh, or reopening the tab) still has a socket with
+    // no idea who we were. If we remember a room+token, try to slide back into
+    // our old seat before the user has to do anything.
+    let session = loadSession();
+    if (session && session.roomCode && session.token) {
+        myName = session.name;
+        socket.emit('join', session);
+    }
 });
 
-socket.on('lobbyUpdate', (names) => {
+socket.on('lobbyUpdate', (players) => {
     document.getElementById("lobbyStatus").textContent =
-        `Players joined (${names.length}): ${names.join(", ")}`;
+        `Players joined (${players.length}): ` +
+        players.map(p => p.connected ? p.name : `${p.name} (disconnected)`).join(", ");
     document.getElementById("startBtn").style.display =
-        names.length >= 2 ? "inline-block" : "none";
+        players.length >= 2 ? "inline-block" : "none";
 });
 
 socket.on('joinRejected', (msg) => {
     showWarning(msg);
+    clearSession(); // whatever we had stored didn't work - don't keep retrying it
 });
 
-socket.on('joinedRoom', (roomCode) => {
+socket.on('joinedRoom', ({ roomCode, token }) => {
+    saveSession(roomCode, token, myName);
+
     let display = document.getElementById("roomCodeDisplay");
     display.style.display = "block";
     display.innerHTML = `Room code: <b>${roomCode}</b> - share this with friends so they can join.`;
     document.getElementById("joinBtn").disabled = true;
     document.getElementById("nameInput").disabled = true;
     document.getElementById("roomCodeInput").disabled = true;
+});
+
+socket.on('playerDisconnected', (name) => {
+    logText(`⚠️ ${name} disconnected - waiting for them to reconnect...`);
+});
+
+socket.on('playerReconnected', (name) => {
+    logText(`✅ ${name} reconnected.`);
 });
 
 socket.on('stateUpdate', (newState) => {
