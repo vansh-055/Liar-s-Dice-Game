@@ -1,0 +1,229 @@
+const socket = io();
+
+let state = null;
+let lastHandKey = null; // used to detect an actual new roll vs. a re-render
+
+// ---------- die rendering ----------
+
+function createDieElement(value, maxFace, opts = {}) {
+    let die = document.createElement("div");
+    die.className = "die" + (opts.small ? " small" : "");
+    die.dataset.max = maxFace;
+    die.textContent = value;
+    if (opts.animate) {
+        die.classList.add("rolling");
+        die.style.animationDelay = `${(opts.index || 0) * 60}ms`;
+    }
+    return die;
+}
+
+function renderDiceRow(container, hand, maxFace, opts = {}) {
+    container.innerHTML = "";
+    hand.forEach((value, i) => {
+        container.appendChild(createDieElement(value, maxFace, { ...opts, index: i }));
+    });
+}
+
+// ---------- display helpers ----------
+
+function logMessage(node) {
+    let log = document.getElementById("log");
+    log.prepend(node);
+}
+
+function showWarning(msg) {
+    document.getElementById("warning").textContent = msg;
+}
+
+function render() {
+    document.getElementById("warning").textContent = "";
+
+    let isMyTurn = state.currentPlayer === state.myIndex;
+
+    if (state.awaitingRoll) {
+        document.getElementById("turnInfo").textContent =
+            `Round over. ${state.playerNames[state.currentPlayer]} starts the next one.`;
+    } else {
+        document.getElementById("turnInfo").textContent = isMyTurn
+            ? "Your turn!"
+            : `${state.playerNames[state.currentPlayer]}'s turn.`;
+    }
+
+    document.getElementById("diceCounts").textContent =
+        "Dice remaining - " + state.playerNames
+            .map((name, i) => `${name}: ${state.playerDiceCounts[i]}`)
+            .join(", ");
+
+    if (state.currentBidQuantity === 0) {
+        document.getElementById("bidInfo").textContent = state.awaitingRoll
+            ? "Roll to begin the next round."
+            : "No bid yet - make the opening bid.";
+    } else {
+        document.getElementById("bidInfo").textContent =
+            `Current bid: ${state.currentBidQuantity} of face ${state.currentBidFace}`;
+    }
+
+    // Only draw a fresh "rolling in" animation when the hand actually changed
+    // (a new round), not on every re-render (e.g. after someone else raises).
+    let handKey = JSON.stringify(state.myHand);
+    let isNewRoll = handKey !== lastHandKey;
+    lastHandKey = handKey;
+
+    let diceRow = document.getElementById("myDiceRow");
+    renderDiceRow(diceRow, state.myHand, state.numFaces, { animate: isNewRoll });
+
+    let faceInput = document.getElementById("bidFaceInput");
+    faceInput.max = state.numFaces;
+    faceInput.placeholder = `face (1-${state.numFaces})`;
+
+    document.getElementById("rollBtn").style.display = state.awaitingRoll ? "inline-block" : "none";
+
+    document.getElementById("raiseBtn").disabled = state.awaitingRoll || !isMyTurn;
+    document.getElementById("callBtn").disabled =
+        state.awaitingRoll || !isMyTurn || state.currentBidQuantity === 0;
+}
+
+// ---------- actions sent to the server ----------
+
+function handleJoin() {
+    let name = document.getElementById("nameInput").value.trim();
+    if (!name) {
+        showWarning("Enter a name first.");
+        return;
+    }
+    socket.emit('join', name);
+}
+
+function startGame() {
+    let startingDice = parseInt(document.getElementById("startingDiceInput").value);
+    let numFaces = parseInt(document.getElementById("numFacesInput").value);
+    socket.emit('startGame', { startingDice, numFaces });
+}
+
+function handleRaise() {
+    let bidQuantity = parseInt(document.getElementById("bidQuantityInput").value);
+    let bidFace = parseInt(document.getElementById("bidFaceInput").value);
+    socket.emit('raise', { bidQuantity, bidFace });
+}
+
+function handleCall() {
+    socket.emit('call');
+}
+
+function handleRoll() {
+    socket.emit('rollNextRound');
+}
+
+// ---------- messages coming from the server ----------
+
+socket.on('connect', () => {
+    console.log('Connected to server with id:', socket.id);
+});
+
+socket.on('lobbyUpdate', (names) => {
+    document.getElementById("lobbyStatus").textContent =
+        `Players joined (${names.length}): ${names.join(", ")}`;
+    document.getElementById("startBtn").style.display =
+        names.length >= 2 ? "inline-block" : "none";
+});
+
+socket.on('joinRejected', (msg) => {
+    showWarning(msg);
+});
+
+socket.on('stateUpdate', (newState) => {
+    state = newState;
+    document.getElementById("lobby").style.display = "none";
+    document.getElementById("gameArea").style.display = "block";
+    render();
+});
+
+socket.on('invalidRaise', () => {
+    showWarning("Invalid raise, try again.");
+});
+
+socket.on('notYourTurn', () => {
+    showWarning("That move isn't allowed right now.");
+});
+
+// Builds one reveal card: every player's row of dice, plus a one-line summary.
+function buildRevealBlock(data, title) {
+    let block = document.createElement("div");
+    block.className = "reveal-block";
+
+    let heading = document.createElement("div");
+    heading.className = "reveal-name";
+    heading.textContent = title;
+    block.appendChild(heading);
+
+    state.playerNames.forEach((name, i) => {
+        let row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "0.5rem";
+        row.style.marginBottom = "0.4rem";
+
+        let label = document.createElement("span");
+        label.textContent = name + (i === state.myIndex ? "" : "");
+        label.style.width = "5.5rem";
+        label.style.flexShrink = "0";
+        label.style.fontSize = "0.85rem";
+        label.style.color = "var(--text-dim)";
+        row.appendChild(label);
+
+        let diceRow = document.createElement("div");
+        diceRow.className = "dice-row";
+        diceRow.style.marginBottom = "0";
+        renderDiceRow(diceRow, data.hands[i], state.numFaces, { small: true });
+        row.appendChild(diceRow);
+
+        block.appendChild(row);
+    });
+
+    let summary = document.createElement("div");
+    summary.className = "reveal-summary";
+    summary.innerHTML =
+        `Bid was <b>${data.bidQuantity} of face ${data.bidFace}</b>. ` +
+        `<b>${state.playerNames[data.winnerRoundIndex]}</b> wins the round, ` +
+        `<b>${state.playerNames[data.loserIndex]}</b> loses a die.`;
+    block.appendChild(summary);
+
+    return block;
+}
+
+socket.on('roundResult', (data) => {
+    logMessage(buildRevealBlock(data, "Hands Revealed"));
+});
+
+socket.on('gameOver', (data) => {
+    let block = buildRevealBlock(data, "Final Reveal");
+    let winnerLine = document.createElement("div");
+    winnerLine.className = "reveal-summary";
+    winnerLine.innerHTML = `🏆 <b>${state.playerNames[data.winnerIndex]}</b> wins the game!`;
+    block.appendChild(winnerLine);
+    logMessage(block);
+
+    document.getElementById("raiseBtn").disabled = true;
+    document.getElementById("callBtn").disabled = true;
+    document.getElementById("backToLobbyBtn").style.display = "inline-block";
+});
+
+document.getElementById("backToLobbyBtn").addEventListener("click", () => {
+    document.getElementById("backToLobbyBtn").style.display = "none";
+    document.getElementById("gameArea").style.display = "none";
+    document.getElementById("lobby").style.display = "block";
+});
+
+socket.on('gameAborted', (msg) => {
+    showWarning(msg);
+    document.getElementById("lobby").style.display = "block";
+    document.getElementById("gameArea").style.display = "none";
+});
+
+// ---------- wire up buttons (once, at load) ----------
+
+document.getElementById("joinBtn").addEventListener("click", handleJoin);
+document.getElementById("startBtn").addEventListener("click", startGame);
+document.getElementById("raiseBtn").addEventListener("click", handleRaise);
+document.getElementById("callBtn").addEventListener("click", handleCall);
+document.getElementById("rollBtn").addEventListener("click", handleRoll);

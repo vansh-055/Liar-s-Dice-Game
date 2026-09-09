@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Liar's Dice</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <h1>🎲 Liar's Dice</h1>
+        <p class="subtitle">Bluff, bid, and call it out.</p>
+
+        <p id="warning"></p>
+
+        <div id="lobby" class="panel">
+            <div class="field">
+                <label for="nameInput">Your name</label>
+                <input id="nameInput" type="text" placeholder="Enter your name">
+            </div>
+            <button id="joinBtn">Join</button>
+            <p id="lobbyStatus"></p>
+
+            <div id="gameSettings" class="field-row">
+                <div class="field">
+                    <label for="startingDiceInput">Dice per player (max 10)</label>
+                    <input id="startingDiceInput" type="number" min="1" max="10" value="5">
+                </div>
+                <div class="field">
+                    <label for="numFacesInput">Faces per die (max 20)</label>
+                    <input id="numFacesInput" type="number" min="2" max="20" value="6">
+                </div>
+            </div>
+            <button id="startBtn" style="display:none;">Start Game</button>
+        </div>
+
+        <div id="gameArea" style="display:none;">
+            <div class="panel">
+                <p id="turnInfo"></p>
+                <p id="bidInfo"></p>
+                <p id="diceCounts"></p>
+
+                <div id="myDiceRow" class="dice-row"></div>
+
+                <div class="field-row">
+                    <div class="field">
+                        <label for="bidQuantityInput">Quantity</label>
+                        <input id="bidQuantityInput" type="number" min="1" placeholder="quantity">
+                    </div>
+                    <div class="field">
+                        <label for="bidFaceInput">Face</label>
+                        <input id="bidFaceInput" type="number" min="1" max="20" placeholder="face">
+                    </div>
+                </div>
+
+                <button id="raiseBtn">Raise</button>
+                <button id="callBtn" class="danger">Call Liar</button>
+                <button id="rollBtn" style="display:none;">Roll Next Round</button>
+                <button id="backToLobbyBtn" class="secondary" style="display:none;">Back to Lobby</button>
+            </div>
+
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="rules.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "liars-dice",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "readline-sync": "^1.4.10",
+    "socket.io": "^4.8.3"
+  }
+}
