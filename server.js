@@ -164,14 +164,17 @@ io.on('connection', (socket) => {
 
         // ---- Fresh join path ----
         if (!name) {
-            socket.emit('joinRejected', 'Enter a name first.');
+            socket.emit('joinRejected', { message: 'Enter a name first.' });
             return;
         }
 
         let roomCode;
         if (requestedCode) {
             if (!rooms.has(requestedCode)) {
-                socket.emit('joinRejected', `Room "${requestedCode}" doesn't exist.`);
+                // Not the user's fault - usually a stale link/session from a room
+                // that's since ended or a server restart. `roomNotFound: true` lets
+                // the client skip the scary error text instead of blaming the player.
+                socket.emit('joinRejected', { message: `Room "${requestedCode}" doesn't exist.`, roomNotFound: true });
                 return;
             }
             roomCode = requestedCode;
@@ -183,11 +186,11 @@ io.on('connection', (socket) => {
         let room = rooms.get(roomCode);
 
         if (room.gameState) {
-            socket.emit('joinRejected', 'A game is already in progress in that room.');
+            socket.emit('joinRejected', { message: 'A game is already in progress in that room.' });
             return;
         }
         if (room.players.some(p => p.socketId === socket.id)) {
-            socket.emit('joinRejected', 'You have already joined.');
+            socket.emit('joinRejected', { message: 'You have already joined.' });
             return;
         }
 
@@ -207,11 +210,11 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         if (room.gameState) {
-            socket.emit('joinRejected', 'A game is already in progress.');
+            socket.emit('joinRejected', { message: 'A game is already in progress.' });
             return;
         }
         if (room.players.length < 2) {
-            socket.emit('joinRejected', 'Need at least 2 players.');
+            socket.emit('joinRejected', { message: 'Need at least 2 players.' });
             return;
         }
 

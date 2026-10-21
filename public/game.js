@@ -180,11 +180,14 @@ socket.on('lobbyUpdate', (players) => {
         players.length >= 2 ? "inline-block" : "none";
 });
 
-socket.on('joinRejected', (msg) => {
-    // A failed silent auto-rejoin isn't a user action gone wrong - there's
-    // nothing to warn about, just drop the stale session and stay on the lobby.
-    if (!autoRejoinInFlight) {
-        showWarning(msg);
+socket.on('joinRejected', ({ message, roomNotFound }) => {
+    // A missing room isn't the player's fault - it's just gone (ended, server
+    // restarted, link went stale). There's nothing for them to fix, so don't
+    // blame them with an error; just quietly reset to a fresh lobby. Same goes
+    // for any rejection of a silent auto-rejoin attempt - the user didn't do
+    // anything just now, so there's nothing for them to be warned about.
+    if (!roomNotFound && !autoRejoinInFlight) {
+        showWarning(message);
     }
     autoRejoinInFlight = false;
     clearSession(); // whatever we had stored didn't work - don't keep retrying it
