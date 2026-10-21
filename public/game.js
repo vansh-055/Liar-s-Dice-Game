@@ -213,6 +213,21 @@ socket.on('notYourTurn', () => {
     showWarning("That move isn't allowed right now.");
 });
 
+// Appends a mix of plain strings and [tagName, text] pairs as text nodes/elements,
+// so player names (user-controlled) never pass through innerHTML.
+function appendRichText(container, parts) {
+    for (let part of parts) {
+        if (Array.isArray(part)) {
+            let [tag, text] = part;
+            let el = document.createElement(tag);
+            el.textContent = text;
+            container.appendChild(el);
+        } else {
+            container.appendChild(document.createTextNode(part));
+        }
+    }
+}
+
 // Builds one reveal card: every player's row of dice, plus a one-line summary.
 function buildRevealBlock(data, title) {
     let block = document.createElement("div");
@@ -231,7 +246,7 @@ function buildRevealBlock(data, title) {
         row.style.marginBottom = "0.4rem";
 
         let label = document.createElement("span");
-        label.textContent = name + (i === state.myIndex ? "" : "");
+        label.textContent = name + (i === state.myIndex ? " (you)" : "");
         label.style.width = "5.5rem";
         label.style.flexShrink = "0";
         label.style.fontSize = "0.85rem";
@@ -247,13 +262,18 @@ function buildRevealBlock(data, title) {
         block.appendChild(row);
     });
 
-    let summary = document.createElement("div");
-    summary.className = "reveal-summary";
-    summary.innerHTML =
-        `Bid was <b>${data.bidQuantity} of face ${data.bidFace}</b>. ` +
-        `<b>${state.playerNames[data.winnerRoundIndex]}</b> wins the round, ` +
-        `<b>${state.playerNames[data.loserIndex]}</b> loses a die.`;
-    block.appendChild(summary);
+    // Abandonment-triggered game overs have a final hand snapshot but no bid to
+    // report - nobody called anything, a seat just never came back from a disconnect.
+    if (data.bidQuantity) {
+        let summary = document.createElement("div");
+        summary.className = "reveal-summary";
+        appendRichText(summary, [
+            "Bid was ", ["b", `${data.bidQuantity} of face ${data.bidFace}`], ". ",
+            ["b", state.playerNames[data.winnerRoundIndex]], " wins the round, ",
+            ["b", state.playerNames[data.loserIndex]], " loses a die."
+        ]);
+        block.appendChild(summary);
+    }
 
     return block;
 }
@@ -266,7 +286,7 @@ socket.on('gameOver', (data) => {
     let block = buildRevealBlock(data, "Final Reveal");
     let winnerLine = document.createElement("div");
     winnerLine.className = "reveal-summary";
-    winnerLine.innerHTML = `🏆 <b>${state.playerNames[data.winnerIndex]}</b> wins the game!`;
+    appendRichText(winnerLine, ["🏆 ", ["b", state.playerNames[data.winnerIndex]], " wins the game!"]);
     block.appendChild(winnerLine);
     logMessage(block);
 
@@ -281,10 +301,8 @@ document.getElementById("backToLobbyBtn").addEventListener("click", () => {
     document.getElementById("lobby").style.display = "block";
 });
 
-socket.on('gameAborted', (msg) => {
-    showWarning(msg);
-    document.getElementById("lobby").style.display = "block";
-    document.getElementById("gameArea").style.display = "none";
+socket.on('playerAborted', (msg) => {
+    logText(`❌ ${msg}`);
 });
 
 // ---------- wire up buttons (once, at load) ----------

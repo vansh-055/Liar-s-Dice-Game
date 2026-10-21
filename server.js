@@ -89,19 +89,43 @@ function finalizeDisconnect(roomCode, token) {
     let room = rooms.get(roomCode);
     if (!room) return;
 
-    let player = room.players.find(p => p.token === token);
-    if (!player || player.connected) return; // they reconnected before the timer fired
+    let playerIndex = room.players.findIndex(p => p.token === token);
+    if (playerIndex === -1) return;
+    let player = room.players[playerIndex];
+    if (player.connected) return; // they reconnected before the timer fired
 
-    let wasInGame = !!room.gameState;
-
-    if (wasInGame) {
+    if (room.gameState) {
         // Player indices are baked into gameState (hands, dice counts, turn order)
-        // the moment a game starts, so we can't quietly remove a seat mid-game
-        // without renumbering everything. Simplest correct move: end the round.
-        room.gameState = null;
-        io.to(roomCode).emit('gameAborted', `${player.name} didn't reconnect in time. Game ended.`);
+        // the moment a game starts, so we can't remove a seat mid-game without
+        // renumbering everything. Instead, treat the abandoned seat exactly like
+        // a player who ran out of dice: getNextActivePlayer/getPrevActivePlayer
+        // and checkWinner already skip 0-dice seats, so this alone makes the
+        // game skip their turns forever, and declares a winner by default if
+        // they were the only thing standing between the others and victory.
+        let gameState = room.gameState;
+        gameState.playerDiceCounts[playerIndex] = 0;
+        // Clear their hand too, not just the count - countFace()/resolveCall()
+        // read actual dice values from `hands`, so a stale hand here would let
+        // their old dice keep counting toward bids after they're supposed to be out.
+        gameState.hands[playerIndex] = [];
+        io.to(roomCode).emit('playerAborted', `${player.name} didn't reconnect in time and is out.`);
+
+        let winnerIndex = checkWinner(gameState.playerDiceCounts);
+        if (winnerIndex !== null) {
+            io.to(roomCode).emit('gameOver', { winnerIndex, hands: gameState.hands });
+            room.gameState = null;
+            broadcastLobby(roomCode);
+        } else {
+            if (gameState.currentPlayer === playerIndex) {
+                gameState.currentPlayer = getNextActivePlayer(playerIndex, gameState.playerDiceCounts);
+            }
+            sendStateToAll(roomCode);
+        }
+        return;
     }
 
+    // Not in a game (still in the lobby) - an abandoned seat here can just be
+    // removed outright, no indices to preserve.
     room.players = room.players.filter(p => p.token !== token);
     broadcastLobby(roomCode);
     cleanupRoomIfEmpty(roomCode);
