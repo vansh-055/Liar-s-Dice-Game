@@ -4,6 +4,11 @@ let state = null;
 let lastHandKey = null; // used to detect an actual new roll vs. a re-render
 let myName = null;      // the name we joined with - needed again if we save a session
 
+// True while a 'join' we sent was the silent auto-rejoin-on-load attempt, not
+// something the user clicked. Lets joinRejected tell the two apart so a stale
+// session from a past visit doesn't surface a confusing error on an empty page.
+let autoRejoinInFlight = false;
+
 // ---------- reconnect session ----------
 // Survives a refresh/network blip: on reconnect we hand the server this token
 // so it can recognize "this is seat 2 coming back", not a new stranger. Wrapped
@@ -162,6 +167,7 @@ socket.on('connect', () => {
     let session = loadSession();
     if (session && session.roomCode && session.token) {
         myName = session.name;
+        autoRejoinInFlight = true;
         socket.emit('join', session);
     }
 });
@@ -175,11 +181,17 @@ socket.on('lobbyUpdate', (players) => {
 });
 
 socket.on('joinRejected', (msg) => {
-    showWarning(msg);
+    // A failed silent auto-rejoin isn't a user action gone wrong - there's
+    // nothing to warn about, just drop the stale session and stay on the lobby.
+    if (!autoRejoinInFlight) {
+        showWarning(msg);
+    }
+    autoRejoinInFlight = false;
     clearSession(); // whatever we had stored didn't work - don't keep retrying it
 });
 
 socket.on('joinedRoom', ({ roomCode, token }) => {
+    autoRejoinInFlight = false;
     saveSession(roomCode, token, myName);
 
     let display = document.getElementById("roomCodeDisplay");
@@ -289,6 +301,13 @@ socket.on('gameOver', (data) => {
     appendRichText(winnerLine, ["🏆 ", ["b", state.playerNames[data.winnerIndex]], " wins the game!"]);
     block.appendChild(winnerLine);
     logMessage(block);
+
+    // The log entry above is easy to miss - also update the prominent status
+    // text so it doesn't keep showing a stale "X's turn" from before the game ended.
+    let turnInfo = document.getElementById("turnInfo");
+    turnInfo.textContent = "";
+    appendRichText(turnInfo, ["🏆 ", ["b", state.playerNames[data.winnerIndex]], " wins the game!"]);
+    document.getElementById("bidInfo").textContent = "Game over - see the final reveal below.";
 
     document.getElementById("raiseBtn").disabled = true;
     document.getElementById("callBtn").disabled = true;
